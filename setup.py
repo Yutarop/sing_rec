@@ -20,7 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'sing_recognition = sing_rec.sing_recognition:main'
+            'sing_recognition = sing_rec.sing_recognition:main',
+            'sing_recognition2 = sing_rec.sing_recognition2:main'
         ],
     },
 )

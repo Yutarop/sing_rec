@@ -7,13 +7,21 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 from sklearn.cluster import DBSCAN
 import numpy as np
+import open3d as o3d
 
-class SingRec(Node):
+class SingRec2(Node):
     def __init__(self):
-        super().__init__("sing_recognition")
+        super().__init__("sing_recognition2")
+
+        # self.sub = self.create_subscription(
+        #     PointCloud2, 'converted_pointcloud2', self.sr_call_back, 10
+        # )
+
+        # This is for running on the robot
         self.sub = self.create_subscription(
-            PointCloud2, 'converted_pointcloud2', self.sr_call_back, 10
+            PointCloud2, 'pcd_segment_obs', self.sr_call_back, 10
         )
+
         self.count = 0
         self.pub = self.create_publisher(PointCloud2, 'filtered_pointcloud2', 10)
 
@@ -24,14 +32,15 @@ class SingRec(Node):
         )
 
         # Filter points by distance
-        filtered_points = self.filter_points_by_distance(point_cloud_data, min_distance=0.5, max_distance=2)
+        filtered_points = self.filter_points_by_distance(point_cloud_data, min_distance=0.5, max_distance=4)
+
+        template_cloud = o3d.io.read_point_cloud("temp2.pcd")
+        self.perform_clustering_and_icp_matching(filtered_points, template_cloud)
 
         # Perform clustering on the filtered points
-        clusters = self.perform_clustering(filtered_points)
+        # clusters = self.perform_clustering_and_icp_matching(filtered_points, template_cloud)
 
-        self.shape_filter(clusters)
-
-        # self.get_logger().info(clusters)
+        # self.shape_filter(clusters)
 
         # Create and publish the filtered PointCloud2 message
         header = Header()
@@ -47,7 +56,7 @@ class SingRec(Node):
         ]
 
         # Create the PointCloud2 message
-        filtered_pointcloud_msg = point_cloud2.create_cloud(header, fields, clusters)
+        filtered_pointcloud_msg = point_cloud2.create_cloud(header, fields, filtered_points)
 
         # Publish the filtered message
         self.pub.publish(filtered_pointcloud_msg)
@@ -66,20 +75,46 @@ class SingRec(Node):
 
         return filtered_points
 
-    def perform_clustering(self, points):
-        # Convert points to a numpy array for clustering
+    def perform_clustering_and_icp_matching(self, points, template_cloud, eps=0.5, min_samples=5, threshold=0.02):
+        # Convert point cloud data to numpy array
         points_np = np.array([(x, y, z) for x, y, z, intensity in points])
-
-        # Apply DBSCAN clustering
-        clustering = DBSCAN(eps=0.5, min_samples=10).fit(points_np)
-
-        # Get the cluster labels (Noise points will be labeled as -1)
+        if points_np.size == 0:
+            return []
+        
+        # Perform clustering with DBSCAN
+        clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(points_np)
         labels = clustering.labels_
 
-        # Prepare the clustered points (Optional: filter noise points)
-        clustered_points = [point for i, point in enumerate(points) if labels[i] != -1]
+        # No need to re-assign points if template_cloud is already in PointCloud format
+        if isinstance(template_cloud, o3d.geometry.PointCloud):
+            template_cloud_o3d = template_cloud  # Use directly if already a PointCloud
+        else:
+            template_cloud_o3d = o3d.geometry.PointCloud()
+            template_cloud_o3d.points = o3d.utility.Vector3dVector(template_cloud)
 
-        return clustered_points
+        matched_clusters = []
+        for cluster_id in set(labels):
+            if cluster_id == -1:
+                continue  # Skip noise points
+
+            # Retrieve cluster points and convert to Open3D format
+            cluster_points = points_np[labels == cluster_id]
+            cluster_cloud = o3d.geometry.PointCloud()
+            cluster_cloud.points = o3d.utility.Vector3dVector(cluster_points)
+
+            # Apply ICP
+            icp_result = o3d.pipelines.registration.registration_icp(
+                cluster_cloud, template_cloud_o3d, threshold,
+                estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint()
+            )
+
+            # Check the matching fitness
+            fitness = icp_result.fitness
+            if fitness > 0.5:  # Example threshold for a match
+                self.get_logger().info('##### Match!######')
+                self.get_logger().info(f'{fitness}')
+            self.get_logger().info(f'{fitness}')
+
 
     def shape_filter(self, points):
         # pass
@@ -115,7 +150,7 @@ class SingRec(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = SingRec()
+    node = SingRec2()
     rclpy.spin(node)
     rclpy.shutdown()
 
